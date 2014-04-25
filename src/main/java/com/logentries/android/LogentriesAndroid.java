@@ -1,6 +1,11 @@
 package com.logentries.android;
 
 
+import android.content.Context;
+import android.util.Log;
+
+import org.apache.http.conn.ssl.SSLSocketFactory;
+
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -33,14 +38,6 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
-
-import org.apache.http.conn.ssl.SSLSocketFactory;
-
-import android.content.Context;
-import android.os.Handler.Callback;
-import android.os.HandlerThread;
-import android.os.Message;
-import android.util.Log;
 
 /**
  * @author Mark Lacomber, marklacomber@gmail.com - 22/08/11
@@ -99,7 +96,7 @@ public class LogentriesAndroid extends Handler {
 	/** Indicator if the socket appender has been started. */
 	boolean startedSocketAppender;
 	/** Indicator if a FileRead Runnable is running in a thread. */
-	boolean readingStarted;
+	boolean startedFileReader;
     /** Indicator if the file appender has been started. */
     boolean startedFileAppender;
 	/**lock for preventing simultaneous reading and writing of the log file*/
@@ -118,17 +115,18 @@ public class LogentriesAndroid extends Handler {
 	FileAppender fileAppender;
 	/** Runnable File reader */
 	FileReader fileReader;
-	/** Message queue for uploads. */
+	/** Message queue for uploads */
 	ArrayBlockingQueue<String> uploadQueue;
-	/** Message queue for saving to file. */
+	/** Message queue for saving to file */
 	ArrayBlockingQueue<String> saveQueue;
-	File dir,file;
+    /** File to buffer log data to when there is no network connectivity */
+	File file;
 
 	/*
 	 * Internal classes
 	 */
 	/**
-	 *  A lock class for synchronization between threads
+	 * A lock class for synchronization between threads
 	 * @author Sean
 	 */
 	class Lock{
@@ -146,35 +144,7 @@ public class LogentriesAndroid extends Handler {
 			notify();
 		}
 	}
-	/**
-	 * A thread that executes runnables passed to it
-	 * @author Sean
-	 */
-	class RunnableExecutorThread extends HandlerThread implements Callback {
 
-		private android.os.Handler mHandler;
-
-		public RunnableExecutorThread() {
-			super("RunnableExecutorThread");
-			// Don't block shut down
-			setDaemon(true);
-		}
-
-		public void doRunnable(Runnable runnable) {
-			if (mHandler == null) {
-				mHandler = new android.os.Handler(getLooper(), this);
-			}
-			Message msg = mHandler.obtainMessage(0, runnable);
-			mHandler.sendMessage(msg);
-		}
-
-		@Override
-		public boolean handleMessage(Message msg) {
-			Runnable runnable = (Runnable) msg.obj;
-			runnable.run();
-			return true;
-		}
-	}
 	/**
 	 * Thread that appends logs to a file
 	 * @author Sean
@@ -238,7 +208,7 @@ public class LogentriesAndroid extends Handler {
 				BufferedReader d = new BufferedReader(new InputStreamReader(m_context.openFileInput(logFileAddress)));
 				String log;
 
-                while(true) {
+                while(!isInterrupted()) {
                     fileLock.lock();
                     log = d.readLine();
                     fileLock.unlock();
@@ -254,7 +224,6 @@ public class LogentriesAndroid extends Handler {
 				fileLock.unlock();
                 immediateUpload = true;
 
-//                stopFileReaderThread();
                 stopFileAppenderThread();
 			} catch (FileNotFoundException e) {
 				dbg("File not found");
@@ -264,16 +233,13 @@ public class LogentriesAndroid extends Handler {
 				e.printStackTrace();
 			}
 
-            readingStarted = false;
+            startedFileReader = false;
 		}
 	}
+
 	/**
 	 * Asynchronous over the socket appender
-	 *
-	 * @author Mark Lacomber
-	 * Edited by Sean - 07/03/14
-	 * - Changed from Thread to Runnable
-	 * - When exception is thrown during writing the data, it is sent to be saved to file
+	 * If an exception is thrown while sending the data it is added to the saveQueue.
 	 */
 	class SocketAppender extends Thread {
 		/** Socket connection. */
@@ -286,10 +252,14 @@ public class LogentriesAndroid extends Handler {
 		OutputStream stream;
 		/** Random number generator for delays between reconnection attempts. */
 		final Random random = new Random();
-		String data=null;
+		String data = null;
 
+        SocketAppender() {
+            super("Socket Appender Thread");
+            setDaemon(true);
+        }
 
-		/**
+        /**
 		 * Opens connection to Logentries
 		 *
 		 * @throws java.io.IOException
@@ -397,21 +367,23 @@ public class LogentriesAndroid extends Handler {
 			} catch (Exception e){
 				// We got interrupted
 				dbg( "Asynchronous socket writer interrupted");
-				//get lost item
+
+				// Get lost item
 				try {
-					saveQueue.offer(data,timeout,milliseconds);
+					saveQueue.offer(data, timeout, milliseconds);
 				} catch (InterruptedException e2) {
 					e2.printStackTrace();
 				}
-				//copy upload queue to saveQueue to preserve the logs
+
+				// Copy upload queue to saveQueue to preserve the logs
 				while(uploadQueue.peek() != null){
 					try {
-						saveQueue.offer(uploadQueue.poll(),timeout,milliseconds);
+						saveQueue.offer(uploadQueue.poll(), timeout, milliseconds);
 					} catch (InterruptedException e1) {
 						e1.printStackTrace();
 					}
 				}
-				startedSocketAppender=false;
+				startedSocketAppender = false;
 			}
 			closeConnection();
 		}
@@ -467,7 +439,7 @@ public class LogentriesAndroid extends Handler {
 		uploadQueue = new ArrayBlockingQueue<String>( QUEUE_SIZE);
 		saveQueue = new ArrayBlockingQueue<String>( QUEUE_SIZE);
 
-		dir = m_context.getFilesDir();
+		File dir = m_context.getFilesDir();
 		file = new File(dir, logFileAddress);
 
         immediateUpload = !file.exists() && isOnline;
@@ -483,7 +455,7 @@ public class LogentriesAndroid extends Handler {
 
 		//control booleans
 		startedSocketAppender = false;
-		readingStarted = false;
+		startedFileReader = false;
 
         setup();
 	}
@@ -497,7 +469,7 @@ public class LogentriesAndroid extends Handler {
         immediateUpload = false;
 
         if(file.exists()){
-            if(isOnline && !readingStarted) {
+            if(isOnline && !startedFileReader) {
                 // If we have a backlog, network activity and the backlog uploader isn't running,
                 // start it.
                 startFileReaderThread();
@@ -559,7 +531,7 @@ public class LogentriesAndroid extends Handler {
             fileReader.start();
         }
 
-        readingStarted = true;
+        startedFileReader = true;
     }
 
     public void startFileAppenderThread() {
@@ -574,23 +546,17 @@ public class LogentriesAndroid extends Handler {
         startedFileAppender = true;
     }
 
-//    public void stopFileReaderThread() {
-//        if(fileReadingThread.getState() != State.NEW && fileReadingThread.getState() != State.TERMINATED){
-//            fileReadingThread.interrupt();
-//        }
-//        readingStarted = false;
-//    }
-
     public void stopFileAppenderThread() {
         if(fileAppender.getState() != State.NEW && fileAppender.getState() != State.TERMINATED){
             fileAppender.interrupt();
+            startedFileAppender = false;
         }
     }
 
     /**
-	 * format and upload a LogRecord, if everything is okay.
-	 * if there is a file of saved logs then write to and read from it 
-	 * until empty, to preserve log order.
+	 * Format and add a LogRecord to the appropriate queue.
+	 * If we can upload now (no file exists and we're online) then add to uploadQueue otherwise
+     * add to saveQueue and write it to the file.
 	 * @param record the LogRecord to upload
 	 */
 	public void publish(LogRecord record) {
@@ -602,7 +568,7 @@ public class LogentriesAndroid extends Handler {
 		//if there is a file then it must be written to and read from until empty
 		if(!immediateUpload){
 			try {//append the latest data to the file
-				saveQueue.offer(MESSAGE, timeout,milliseconds);
+				saveQueue.offer(MESSAGE, timeout, milliseconds);
 			} catch (InterruptedException e) {
 				e.printStackTrace();
 			}
@@ -626,22 +592,6 @@ public class LogentriesAndroid extends Handler {
 					e.printStackTrace();
 				}
 			}
-		}
-	}
-	/**
-	 * Called when there is no Internet connection
-	 * passes event to the queue for it to be saved
-	 * @param event the formatted log report to save
-	 */
-	public void saveLog(String event) {
-		//start up file appender if it is not already running
-		if(fileAppender.getState()==State.NEW){
-			fileAppender.start();
-		}
-		try {
-			saveQueue.offer(event,timeout,milliseconds);
-		} catch (InterruptedException e) {
-			e.printStackTrace();
 		}
 	}
 
@@ -680,6 +630,7 @@ public class LogentriesAndroid extends Handler {
 
         if(fileReader.getState() != State.NEW && fileReader.getState() != State.TERMINATED) {
             fileReader.interrupt();
+            startedFileReader = false;
         }
 
         stopFileAppenderThread();
