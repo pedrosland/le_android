@@ -87,6 +87,8 @@ public class LogentriesAndroid extends Handler {
 	static final long timeout= 1000;
 	/**The unit of time of a timeout */
 	static final TimeUnit milliseconds= TimeUnit.MILLISECONDS;
+    /** Unicode character for newline */
+    static final char UNICODE_NEWLINE = 0x2424;
 	/*
 	 * Fields
 	 */
@@ -98,10 +100,17 @@ public class LogentriesAndroid extends Handler {
 	boolean startedSocketAppender;
 	/** Indicator if a FileRead Runnable is running in a thread. */
 	boolean readingStarted;
+    /** Indicator if the file appender has been started. */
+    boolean startedFileAppender;
 	/**lock for preventing simultaneous reading and writing of the log file*/
 	Lock fileLock;
 	/** Context inherited from Activity/Application */
 	Context m_context;
+
+    /** Determines if entries are uploaded immediately or saved to file for upload later */
+    private boolean immediateUpload = true;
+    /** Online status */
+    private boolean isOnline = true;
 
 	/** Asynchronous socket appender, Runnable */
 	SocketAppender appender;
@@ -192,7 +201,7 @@ public class LogentriesAndroid extends Handler {
 			try {
 				fos = m_context.openFileOutput(logFileAddress, Context.MODE_APPEND);
 				while(true){
-					String data=saveQueue.take();
+					String data = saveQueue.take();
 					fileLock.lock();
 					fos.write((data).getBytes());
 					fileLock.unlock();
@@ -204,7 +213,7 @@ public class LogentriesAndroid extends Handler {
 			} catch (InterruptedException e) {
 				e.printStackTrace();
 			}finally{
-				if(fos!=null){
+				if(fos != null){
 					try {
 						fos.close();
 					} catch (IOException e) {
@@ -212,6 +221,8 @@ public class LogentriesAndroid extends Handler {
 					}
 				}
 			}
+
+            startedFileAppender = false;
 		}
 	}
 	/**
@@ -222,22 +233,28 @@ public class LogentriesAndroid extends Handler {
 	class FileReader implements Runnable{
 		public void run(){
 			try{
-				Thread.sleep(50);
-				 BufferedReader d= new BufferedReader(new InputStreamReader(m_context.openFileInput(logFileAddress)));
-				String log = " ";
-				while(true) {
-					fileLock.lock();
-					log = d.readLine();
-					if(log==null){
-						//reached end of file, exit loop, delete file, release lock
-						break;
-					}
-					fileLock.unlock();
-					uploadQueue.offer(log + "\r\n",timeout,milliseconds);
+				//Thread.sleep(50);
+				BufferedReader d = new BufferedReader(new InputStreamReader(m_context.openFileInput(logFileAddress)));
+				String log;
 
-				}
-				file.delete();
+                while(true) {
+                    fileLock.lock();
+                    log = d.readLine();
+                    fileLock.unlock();
+
+                    if(log == null) {
+                        break;
+                    }
+
+                    uploadQueue.offer(log + "\r\n", timeout, milliseconds);
+                }
+
+                file.delete();
 				fileLock.unlock();
+                immediateUpload = true;
+
+//                stopFileReaderThread();
+                stopFileAppenderThread();
 			} catch (FileNotFoundException e) {
 				dbg("File not found");
 			} catch (IOException e) {
@@ -245,8 +262,8 @@ public class LogentriesAndroid extends Handler {
 			} catch (InterruptedException e) {
 				e.printStackTrace();
 			}
-			//notify that no reading runnable is currently running
-			readingStarted=false;
+
+            readingStarted = false;
 		}
 	}
 	/**
@@ -274,8 +291,8 @@ public class LogentriesAndroid extends Handler {
 		/**
 		 * Opens connection to Logentries
 		 *
-		 * @throws IOException
-		 * @throws CertificateException
+		 * @throws java.io.IOException
+		 * @throws java.security.cert.CertificateException
 		 */
 		void openConnection() throws IOException {
 			try{
@@ -364,20 +381,17 @@ public class LogentriesAndroid extends Handler {
 				while (true) {
 					// Take data from queue
 					
-					data=uploadQueue.take();
+					data = uploadQueue.take();
 					String dataWithToken = m_token + data;
-					dataWithToken = dataWithToken.trim().replace('\n', '\u2028') + '\n';
+					dataWithToken = dataWithToken.trim().replace('\n', UNICODE_NEWLINE) + '\n';
 					byte[] msg = dataWithToken.getBytes("UTF8");
 					// Send data, save to file on failure
-					while (true){
-						try{
-							stream.write( msg);
-							stream.flush();
-						} catch (IOException e) {
-							reopenConnection();
-						}
-						break;
-					}
+                    try{
+                        stream.write( msg);
+                        stream.flush();
+                    } catch (IOException e) {
+                        reopenConnection();
+                    }
 				}
 			} catch (Exception e){
 				// We got interrupted
@@ -389,7 +403,7 @@ public class LogentriesAndroid extends Handler {
 					e2.printStackTrace();
 				}
 				//copy upload queue to saveQueue to preserve the logs
-				while(uploadQueue.peek()!=null){
+				while(uploadQueue.peek() != null){
 					try {
 						saveQueue.offer(uploadQueue.poll(),timeout,milliseconds);
 					} catch (InterruptedException e1) {
@@ -442,33 +456,67 @@ public class LogentriesAndroid extends Handler {
 		}
 	}
 
-	public LogentriesAndroid( String token, boolean debug, Context context)
+	public LogentriesAndroid( String token, boolean debug, Context context, boolean isOnline)
 	{
-		this.m_context=context;
 		this.m_token = token;
 		this.debug = debug;
+        this.m_context = context;
+        this.isOnline = isOnline;
 
 		uploadQueue = new ArrayBlockingQueue<String>( QUEUE_SIZE);
 		saveQueue = new ArrayBlockingQueue<String>( QUEUE_SIZE);
 
 		dir = m_context.getFilesDir();
 		file = new File(dir, logFileAddress);
-		
+
+        immediateUpload = !file.exists() && isOnline;
+
 		fileLock=new Lock();
 
 		//runnables
 		appender = new SocketAppender();
-		fileReader= new FileReader();
+		fileReader = new FileReader();
 
 		//threads
-		fileAppender= new FileAppender();
-		fileReadingThread= new RunnableExecutorThread();
-		socketAppendingThread= new RunnableExecutorThread();
+		fileAppender = new FileAppender();
+		fileReadingThread = new RunnableExecutorThread();
+		socketAppendingThread = new RunnableExecutorThread();
 
 		//control booleans
-		startedSocketAppender=false;
-		readingStarted=false;
+		startedSocketAppender = false;
+		readingStarted = false;
+
+        setup();
 	}
+
+
+    /**
+     * @param isOnline true if events are to be uploaded to Logentries immediately
+     */
+    public void setImmediateUpload(boolean isOnline) {
+        this.isOnline = isOnline;
+        immediateUpload = false;
+
+        if(file.exists()){
+            if(isOnline && !readingStarted) {
+                // If we have a backlog, network activity and the backlog uploader isn't running,
+                // start it.
+                startFileReaderThread();
+            }
+        }else if(isOnline){
+            immediateUpload = true;
+
+//            stopFileReaderThread();
+        }
+    }
+
+    /**
+     * @return true if events are to be uploaded immediately, false otherwise
+     * default value: true
+     */
+    public boolean getImmediateUpload() {
+        return immediateUpload;
+    }
 
 	/**
 	 * Checks that key and location are set.
@@ -488,7 +536,67 @@ public class LogentriesAndroid extends Handler {
 		return true;
 	}
 
-	/**
+    public void setup() {
+        //start up the threads if they are not running
+        if (socketAppendingThread.getState()==State.NEW && checkCredentials()) {
+            dbg( "Starting Logentries asynchronous socket appender");
+            socketAppendingThread.start();
+        }
+
+        //if we are not trying to upload then start uploading
+        if(!startedSocketAppender){
+            startedSocketAppender = true;
+            socketAppendingThread.doRunnable(appender);
+        }
+
+        if(file.exists() && isOnline) {
+            startFileReaderThread();
+        }
+        if(!immediateUpload){
+            startFileAppenderThread();
+        }
+    }
+
+    public void startFileReaderThread() {
+        if(fileReadingThread.getState() == State.TERMINATED){
+            fileReadingThread = new RunnableExecutorThread();
+        }
+
+        if(fileReadingThread.getState() == State.NEW) {
+            fileReadingThread.start();
+        }
+
+        fileReadingThread.doRunnable(fileReader);
+
+        readingStarted = true;
+    }
+
+    public void startFileAppenderThread() {
+        if(fileAppender.getState() == State.TERMINATED){
+            fileAppender = new FileAppender();
+        }
+
+        if(fileAppender.getState() == State.NEW){
+            fileAppender.start();
+        }
+
+        startedFileAppender = true;
+    }
+
+//    public void stopFileReaderThread() {
+//        if(fileReadingThread.getState() != State.NEW && fileReadingThread.getState() != State.TERMINATED){
+//            fileReadingThread.interrupt();
+//        }
+//        readingStarted = false;
+//    }
+
+    public void stopFileAppenderThread() {
+        if(fileAppender.getState() != State.NEW && fileAppender.getState() != State.TERMINATED){
+            fileAppender.interrupt();
+        }
+    }
+
+    /**
 	 * format and upload a LogRecord, if everything is okay.
 	 * if there is a file of saved logs then write to and read from it 
 	 * until empty, to preserve log order.
@@ -499,44 +607,28 @@ public class LogentriesAndroid extends Handler {
 
 		String MESSAGE = this.format(dateTime, record.getMessage(), record.getLevel());
 
-		//start up the threads if they are not running
-		if (socketAppendingThread.getState()==State.NEW && checkCredentials()) {
-			dbg( "Starting Logentries asynchronous socket appender");
-			socketAppendingThread.start();
-		}
-		if(!startedSocketAppender){//if we are not trying to upload then start uploading
-			startedSocketAppender=true;
-			socketAppendingThread.doRunnable(appender);
-		}
-		if(fileReadingThread.getState()==State.NEW){
-			fileReadingThread.start();
-		}
-		if(fileAppender.getState()==State.NEW){
-			fileAppender.start();
-		}
 		//to preserve ordering of logs
 		//if there is a file then it must be written to and read from until empty
-		if(file.exists()){//there is a file
+		if(!immediateUpload){
 			try {//append the latest data to the file
 				saveQueue.offer(MESSAGE, timeout,milliseconds);
 			} catch (InterruptedException e) {
 				e.printStackTrace();
 			}
-			if(!readingStarted){// a read is not happening
-				fileReadingThread.doRunnable(fileReader);
-				readingStarted=true;
-			}
-			
+
+            if(!startedFileAppender) {
+                startFileAppenderThread();
+            }
 		}
 		else{
-			boolean successfull_add=false;
+			boolean successful_add = false;
 			try {//try adding to upload queue
-				successfull_add = uploadQueue.offer( MESSAGE, timeout,milliseconds);
+				successful_add = uploadQueue.offer( MESSAGE, timeout,milliseconds);
 			} catch (InterruptedException e1) {
 				e1.printStackTrace();
 			}
 			//if that fails add it to the saveQueue
-			if(!successfull_add){
+			if(!successful_add){
 				try {
 					saveQueue.offer(MESSAGE, timeout,milliseconds);
 				} catch (InterruptedException e) {
@@ -571,6 +663,7 @@ public class LogentriesAndroid extends Handler {
 	 */
 	public String format(Date date, String logData, Level level) {
 		SimpleDateFormat sdf = new SimpleDateFormat("EEE d MMM HH:mm:ss Z yyyy");
+        logData = logData.replace('\n', UNICODE_NEWLINE);
 		String log = sdf.format(date) + ", severity=" + level.toString() + ", " + logData + "\n";
 		return log;
 	}
@@ -590,6 +683,8 @@ public class LogentriesAndroid extends Handler {
 	public void close() {
 		// Interrupt the background thread
 		socketAppendingThread.interrupt();
+
+        //TODO: do we need to do this to the other threads?
 	}
 
 	@Override

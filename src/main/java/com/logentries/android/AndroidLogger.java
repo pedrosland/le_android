@@ -41,11 +41,10 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 
 	private LogentriesAndroid le = null;
 	private Logger logger = null;
-	private static boolean immediateUpload = true;
 	private Context context = null;
 	protected List<String> logList = null;
-	UncaughtExceptionHandler defaultUEH;
-	private static NetworkReceiver receiver= new NetworkReceiver();
+	private final UncaughtExceptionHandler defaultUEH;
+	private NetworkReceiver receiver;
 
 	/**
 	 * When subclassing: just call super(context, token) in constructor
@@ -55,15 +54,25 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	protected AndroidLogger(Context context, String token) {
 		defaultUEH = Thread.getDefaultUncaughtExceptionHandler();
 		Thread.setDefaultUncaughtExceptionHandler(this);
+
 		this.context = context;
+
 		logger = Logger.getLogger("root");
-		le = new LogentriesAndroid(token, true,context);
+		le = new LogentriesAndroid(token, true, context, isOnline());
 		logger.addHandler(le);
-		immediateUpload=isOnline();
-		receiver = new NetworkReceiver();
+
+        // Set up handler for network connectivity change
+        receiver = new NetworkReceiver(le);
 		IntentFilter filter = new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION);
 		context.registerReceiver(receiver, filter);
 	}
+
+    /**
+     * FIXME: DEBUGGING
+     */
+    public boolean getImmediateUpload() {
+        return le.getImmediateUpload();
+    }
 
 
 	/**
@@ -87,13 +96,6 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	}
 
 	/**
-	 * @param upload true if events are to be uploaded to Logentries immediately
-	 */
-	public static void setImmediateUpload(boolean upload) {
-		immediateUpload = upload;
-	}
-
-	/**
 	 * 
 	 * @return true if wifi or mobile connection present
 	 */
@@ -104,13 +106,6 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 			return true;
 		}
 		return false;
-	}
-	/**
-	 * @return true if events are to be uploaded immediately, false otherwise
-	 * default value: true
-	 */
-	public boolean getImmediateUpload() {
-		return immediateUpload;
 	}
 
 	/**
@@ -131,7 +126,7 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	/**
 	 * Creates and uploads/stores a log event with severity <b>severe</b>
 	 * Java Logger priority: 1000 (highest)
-	 * @param logContents the textual contents of the log
+	 * @param logMessage the textual contents of the log
 	 */
 	public void severe(String logMessage) {
 		process(logMessage, AndroidLevel.SEVERE);
@@ -140,7 +135,7 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	/**
 	 * Creates and uploads/stores a log event with severity <b>error</b>
 	 * Java Logger priority: 950
-	 * @param logContents the textual contents of the log
+	 * @param logMessage the textual contents of the log
 	 */
 	public void error(String logMessage) {
 		process(logMessage, AndroidLevel.ERROR);
@@ -149,7 +144,7 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	/**
 	 * Creates and uploads/stores a log event with severity <b>warning</b>
 	 * Java Logger priority: 900
-	 * @param logContents the textual contents of the log
+	 * @param logMessage the textual contents of the log
 	 */
 	public void warn(String logMessage) {
 		process(logMessage, AndroidLevel.WARNING);
@@ -158,7 +153,7 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	/**
 	 * Creates and uploads/stores a log event with severity <b>debug</b>
 	 * Java Logger priority: 850
-	 * @param logContents the textual contents of the log
+	 * @param logMessage the textual contents of the log
 	 */
 	public void debug(String logMessage) {
 		process(logMessage, AndroidLevel.DEBUG);
@@ -167,7 +162,7 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	/**
 	 * Creates and uploads/stores a log event with severity <b>info</b>
 	 * Java Logger priority: 800
-	 * @param logContents the textual contents of the log
+	 * @param logMessage the textual contents of the log
 	 */
 	public void info(String logMessage) {
 		process(logMessage, AndroidLevel.INFO);
@@ -176,7 +171,7 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	/**
 	 * Creates and uploads/stores a log event with severity <b>config</b>
 	 * Java Logger priority: 700
-	 * @param logContents the textual contents of the log
+	 * @param logMessage the textual contents of the log
 	 */
 	public void config(String logMessage) {
 		process(logMessage, AndroidLevel.CONFIG);
@@ -185,7 +180,7 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	/**
 	 * Creates and uploads/stores a log event with severity <b>fine</b>
 	 * Java Logger priority: 500
-	 * @param logContents the textual contents of the log
+	 * @param logMessage the textual contents of the log
 	 */
 	public void fine(String logMessage) {
 		process(logMessage, AndroidLevel.FINE);
@@ -194,7 +189,7 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	/**
 	 * Creates and uploads/stores a log event with severity <b>finer</b>
 	 * Java Logger priority: 400
-	 * @param logContents the textual contents of the log
+	 * @param logMessage the textual contents of the log
 	 */
 	public void finer(String logMessage) {
 		process(logMessage, AndroidLevel.FINER);
@@ -203,7 +198,7 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	/**
 	 * Creates and uploads/stores a log event with severity <b>finest</b>
 	 * Java Logger priority: 300
-	 * @param logContents the textual contents of the log
+	 * @param logMessage the textual contents of the log
 	 */
 	public void finest(String logMessage) {
 		process(logMessage, AndroidLevel.FINEST);
@@ -212,7 +207,7 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	/**
 	 * Creates and uploads/stores a log event with severity <b>verbose</b>
 	 * Java Logger priority: 0
-	 * @param logContents the textual contents of the log
+	 * @param logMessage the textual contents of the log
 	 */
 	public void verbose(String logMessage) {
 		process(logMessage, AndroidLevel.VERBOSE);
@@ -220,23 +215,24 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 
 	/**
 	 * Composes a log event with a timestamp and severity and uploads or stores it.
-	 * @param log The contents of the log (not including timestamp and severity) to be processed
+	 * @param logMessage The contents of the log (not including timestamp and severity) to be processed
 	 * @param level The severity level to be incorporated into the log event
 	 */
 	protected void process(String logMessage, Level level) {
-		if(logMessage==null){
-			logMessage="null";
+		if(logMessage == null){
+			logMessage = "null";
 		}
 		
-		if(getImmediateUpload()) {
+//		if(le.getImmediateUpload()) {
 			le.publish(new LogRecord(level, logMessage));
-		} else {
-			//format and pass along to saving thread
-			Date currentTime = new Date();
-			String event = le.format(currentTime, logMessage, level);
-			le.saveLog(event);
-		}
+//		} else {
+//			//format and pass along to saving thread
+//			Date currentTime = new Date();
+//			String event = le.format(currentTime, logMessage, level);
+//			le.saveLog(event);
+//		}
 	}
+
 	/**
 	 * removes the broadcast receiver from the context it was bound to.
 	 * Stops listening for connection changes
@@ -244,6 +240,7 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 	public void stopReceiver(){
 		context.unregisterReceiver(receiver);
 	}
+
 	@Override
 	public void uncaughtException(Thread t, Throwable e) {
 		//print the exception
@@ -251,6 +248,7 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 		//throw exception as expected, crashing the app
 		defaultUEH.uncaughtException(t, e);
 	}
+
 	/**
 	 * Prints the stacktrace of a thrown exception
 	 * @param e The thrown Exception to print
@@ -263,28 +261,26 @@ public class AndroidLogger implements UncaughtExceptionHandler{
 		String stacktrace = result.toString();
 		process(stacktrace, AndroidLevel.ERROR);
 	}
+
 	/**
 	 * Prints everything outputted to logcat, requires READ_LOGS permission, unused
 	 */
-	public void getAllLogcat(){
-		StringBuilder debuglog=new StringBuilder();
-		try {
-			Process process = Runtime.getRuntime().exec("logcat -d");//get logcat
-			BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-			String line;
-
-			while ((line = bufferedReader.readLine()) != null) {
-				debuglog.append(line);
-				debuglog.append("\r\n");
-			}
-			Runtime.getRuntime().exec("logcat -c");//clear logcat
-		} catch (IOException e2) {
-			e2.printStackTrace();
-		}
-	}
-	
-
-
+//	public void getAllLogcat(){
+//		StringBuilder debuglog = new StringBuilder();
+//		try {
+//			Process process = Runtime.getRuntime().exec("logcat -d");//get logcat
+//			BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+//			String line;
+//
+//			while ((line = bufferedReader.readLine()) != null) {
+//				debuglog.append(line);
+//				debuglog.append("\r\n");
+//			}
+//			Runtime.getRuntime().exec("logcat -c");//clear logcat
+//		} catch (IOException e2) {
+//			e2.printStackTrace();
+//		}
+//	}
 }
 
 /**
@@ -300,16 +296,16 @@ class AndroidLevel extends Level {
 	protected AndroidLevel(String name, int level) {
 		super(name, level);
 	}
-	public static Level SEVERE = new AndroidLevel("SEVERE", 1000);
-	public static Level ERROR = new AndroidLevel("ERROR", 950);
-	public static Level WARN = new AndroidLevel("WARN", 900);
-	public static Level DEBUG = new AndroidLevel("DEBUG", 850);
-	public static Level INFO = new AndroidLevel("INFO", 800);
-	public static Level CONFIG = new AndroidLevel("CONFIG", 700);
-	public static Level FINE = new AndroidLevel("FINE", 500);
-	public static Level FINER = new AndroidLevel("FINER", 400);
-	public static Level FINEST = new AndroidLevel("FINEST", 300);
-	public static Level VERBOSE = new AndroidLevel("VERBOSE", 0);
+	public static final Level SEVERE = new AndroidLevel("SEVERE", 1000);
+	public static final Level ERROR = new AndroidLevel("ERROR", 950);
+	public static final Level WARN = new AndroidLevel("WARN", 900);
+	public static final Level DEBUG = new AndroidLevel("DEBUG", 850);
+	public static final Level INFO = new AndroidLevel("INFO", 800);
+	public static final Level CONFIG = new AndroidLevel("CONFIG", 700);
+	public static final Level FINE = new AndroidLevel("FINE", 500);
+	public static final Level FINER = new AndroidLevel("FINER", 400);
+	public static final Level FINEST = new AndroidLevel("FINEST", 300);
+	public static final Level VERBOSE = new AndroidLevel("VERBOSE", 0);
 }
 
 /**
@@ -320,15 +316,23 @@ class AndroidLevel extends Level {
  */
 class NetworkReceiver extends BroadcastReceiver {
 
+    public LogentriesAndroid logger;
+
+    protected NetworkReceiver(LogentriesAndroid logger) {
+        super();
+
+        this.logger = logger;
+    }
+
 	@Override
-	public void onReceive(Context context, Intent intent) {  
-		ConnectivityManager cm =(ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+	public void onReceive(Context context, Intent intent) {
+		ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
 		NetworkInfo netInfo = cm.getActiveNetworkInfo();
-		if (netInfo != null && netInfo.isConnectedOrConnecting()) {
-			AndroidLogger.setImmediateUpload(true);
+		if (netInfo != null && netInfo.isConnected()) {
+			logger.setImmediateUpload(true);
 		}
 		else{
-			AndroidLogger.setImmediateUpload(false);
+            logger.setImmediateUpload(false);
 		}
 	}
 }
