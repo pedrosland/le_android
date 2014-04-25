@@ -230,7 +230,12 @@ public class LogentriesAndroid extends Handler {
 	 * @author Sean
 	 *
 	 */
-	class FileReader implements Runnable{
+	class FileReader extends Thread{
+        FileReader(){
+            super("File Reader Thread");
+            setDaemon(true);
+        }
+
 		public void run(){
 			try{
 				//Thread.sleep(50);
@@ -558,15 +563,13 @@ public class LogentriesAndroid extends Handler {
     }
 
     public void startFileReaderThread() {
-        if(fileReadingThread.getState() == State.TERMINATED){
-            fileReadingThread = new RunnableExecutorThread();
+        if(fileReader.getState() == State.TERMINATED){
+            fileReader = new FileReader();
         }
 
-        if(fileReadingThread.getState() == State.NEW) {
-            fileReadingThread.start();
+        if(fileReader.getState() == State.NEW) {
+            fileReader.start();
         }
-
-        fileReadingThread.doRunnable(fileReader);
 
         readingStarted = true;
     }
