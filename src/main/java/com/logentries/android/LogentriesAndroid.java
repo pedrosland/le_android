@@ -112,16 +112,12 @@ public class LogentriesAndroid extends Handler {
     /** Online status */
     private boolean isOnline = true;
 
-	/** Asynchronous socket appender, Runnable */
-	SocketAppender appender;
+	/** Socket appender Thread */
+	SocketAppender socketAppender;
 	/** File appender Thread */
 	FileAppender fileAppender;
 	/** Runnable File reader */
 	FileReader fileReader;
-	/** Thread for Running File reader */
-	RunnableExecutorThread fileReadingThread;
-	/** Thread for Running uploads */
-	RunnableExecutorThread socketAppendingThread;
 	/** Message queue for uploads. */
 	ArrayBlockingQueue<String> uploadQueue;
 	/** Message queue for saving to file. */
@@ -279,7 +275,7 @@ public class LogentriesAndroid extends Handler {
 	 * - Changed from Thread to Runnable
 	 * - When exception is thrown during writing the data, it is sent to be saved to file
 	 */
-	class SocketAppender implements Runnable {
+	class SocketAppender extends Thread {
 		/** Socket connection. */
 		Socket s;
 		/** SSLSocket connection. */
@@ -479,13 +475,11 @@ public class LogentriesAndroid extends Handler {
 		fileLock=new Lock();
 
 		//runnables
-		appender = new SocketAppender();
+		socketAppender = new SocketAppender();
 		fileReader = new FileReader();
 
 		//threads
 		fileAppender = new FileAppender();
-		fileReadingThread = new RunnableExecutorThread();
-		socketAppendingThread = new RunnableExecutorThread();
 
 		//control booleans
 		startedSocketAppender = false;
@@ -543,15 +537,9 @@ public class LogentriesAndroid extends Handler {
 
     public void setup() {
         //start up the threads if they are not running
-        if (socketAppendingThread.getState()==State.NEW && checkCredentials()) {
+        if (socketAppender.getState() == State.NEW && checkCredentials()) {
             dbg( "Starting Logentries asynchronous socket appender");
-            socketAppendingThread.start();
-        }
-
-        //if we are not trying to upload then start uploading
-        if(!startedSocketAppender){
-            startedSocketAppender = true;
-            socketAppendingThread.doRunnable(appender);
+            socketAppender.start();
         }
 
         if(file.exists() && isOnline) {
@@ -685,7 +673,7 @@ public class LogentriesAndroid extends Handler {
 	 */
 	public void close() {
 		// Interrupt the background thread
-		socketAppendingThread.interrupt();
+		socketAppender.interrupt();
 
         //TODO: do we need to do this to the other threads?
 	}
