@@ -672,10 +672,17 @@ public class LogentriesAndroid extends Handler {
 	 * Interrupts the background logging thread
 	 */
 	public void close() {
-		// Interrupt the background thread
-		socketAppender.interrupt();
+		// Interrupt the threads
 
-        //TODO: do we need to do this to the other threads?
+        if(socketAppender.getState() != State.NEW && socketAppender.getState() != State.TERMINATED) {
+            socketAppender.interrupt();
+        }
+
+        if(fileReader.getState() != State.NEW && fileReader.getState() != State.TERMINATED) {
+            fileReader.interrupt();
+        }
+
+        stopFileAppenderThread();
 	}
 
 	@Override
