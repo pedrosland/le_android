@@ -30,6 +30,7 @@ import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -100,7 +101,7 @@ public class LogentriesAndroid extends Handler {
     /** Indicator if the file appender has been started. */
     boolean startedFileAppender;
 	/**lock for preventing simultaneous reading and writing of the log file*/
-	Lock fileLock;
+	ReentrantLock fileLock;
 	/** Context inherited from Activity/Application */
 	Context m_context;
 
@@ -163,9 +164,11 @@ public class LogentriesAndroid extends Handler {
 		 * Release Lock
 		 */
 		public void run(){
-			FileOutputStream fos = null;
+            FileOutputStream fos = null;
+
 			try {
-				fos = m_context.openFileOutput(logFileAddress, Context.MODE_APPEND);
+                fos = m_context.openFileOutput(logFileAddress, Context.MODE_APPEND);
+
 				while(true){
 					String data = saveQueue.take();
 					fileLock.lock();
@@ -174,11 +177,12 @@ public class LogentriesAndroid extends Handler {
 				}
 			} catch (IOException e) {
 				e.printStackTrace();
-			} catch(NullPointerException e) {
-				e.printStackTrace();
 			} catch (InterruptedException e) {
 				e.printStackTrace();
 			}finally{
+                if(fileLock.isHeldByCurrentThread()) {
+                    fileLock.unlock();
+                }
 				if(fos != null){
 					try {
 						fos.close();
@@ -189,51 +193,6 @@ public class LogentriesAndroid extends Handler {
 			}
 
             startedFileAppender = false;
-		}
-	}
-	/**
-	 * Runnable to read logs from file and send to be uploaded
-	 * @author Sean
-	 *
-	 */
-	class FileReader extends Thread{
-        FileReader(){
-            super("File Reader Thread");
-            setDaemon(true);
-        }
-
-		public void run(){
-			try{
-				//Thread.sleep(50);
-				BufferedReader d = new BufferedReader(new InputStreamReader(m_context.openFileInput(logFileAddress)));
-				String log;
-
-                while(!isInterrupted()) {
-                    fileLock.lock();
-                    log = d.readLine();
-                    fileLock.unlock();
-
-                    if(log == null) {
-                        break;
-                    }
-
-                    uploadQueue.offer(log + "\r\n", timeout, milliseconds);
-                }
-
-                file.delete();
-				fileLock.unlock();
-                immediateUpload = true;
-
-                stopFileAppenderThread();
-			} catch (FileNotFoundException e) {
-				dbg("File not found");
-			} catch (IOException e) {
-				e.printStackTrace();
-			} catch (InterruptedException e) {
-				e.printStackTrace();
-			}
-
-            startedFileReader = false;
 		}
 	}
 
@@ -444,7 +403,7 @@ public class LogentriesAndroid extends Handler {
 
         immediateUpload = !file.exists() && isOnline;
 
-		fileLock=new Lock();
+		fileLock = new ReentrantLock();
 
 		//runnables
 		socketAppender = new SocketAppender();
@@ -566,34 +525,34 @@ public class LogentriesAndroid extends Handler {
 
 		//to preserve ordering of logs
 		//if there is a file then it must be written to and read from until empty
-		if(!immediateUpload){
-			try {//append the latest data to the file
-				saveQueue.offer(MESSAGE, timeout, milliseconds);
-			} catch (InterruptedException e) {
-				e.printStackTrace();
-			}
+        if (immediateUpload) {
+            boolean successful_add = false;
+            try {//try adding to upload queue
+                successful_add = uploadQueue.offer( MESSAGE, timeout,milliseconds);
+            } catch (InterruptedException e1) {
+                e1.printStackTrace();
+            }
+            //if that fails add it to the saveQueue
+            if(!successful_add){
+                try {
+                    saveQueue.offer(MESSAGE, timeout,milliseconds);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        } else {
+            try {//append the latest data to the file
+                saveQueue.offer(MESSAGE, timeout, milliseconds);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
 
             if(!startedFileAppender) {
                 startFileAppenderThread();
             }
-		}
-		else{
-			boolean successful_add = false;
-			try {//try adding to upload queue
-				successful_add = uploadQueue.offer( MESSAGE, timeout,milliseconds);
-			} catch (InterruptedException e1) {
-				e1.printStackTrace();
-			}
-			//if that fails add it to the saveQueue
-			if(!successful_add){
-				try {
-					saveQueue.offer(MESSAGE, timeout,milliseconds);
-				} catch (InterruptedException e) {
-					e.printStackTrace();
-				}
-			}
-		}
-	}
+
+         }
+    }
 
 
 	/**
